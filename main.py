@@ -1,24 +1,33 @@
 from __future__ import annotations
-
-from typing import Any, Dict
-
+from contextlib import asynccontextmanager
+from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Body
 from fastapi.responses import JSONResponse
+from ragdbservice.history_rag_service import history_rag_service
 
-from service.chroma_service import schema_rag_service
-
-
-app = FastAPI(title="Schema RAG Service", version="1.0.0")
+from ragdbservice.schema_rag_service import schema_rag_service
 
 
-@app.on_event("startup")
-def _startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # ---- STARTUP ----
     schema_rag_service.start()
+    history_rag_service.start()
+    yield
+    # ---- SHUTDOWN ----
+    # если у сервисов есть stop()/close() — вызови тут
+    # history_rag_service.stop()
+    # schema_rag_service.stop()
 
+app = FastAPI(
+    title="RagDBService",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 @app.post("/schema")
-def get_schema(analysis: Dict[str, Any] = Body(...)) -> JSONResponse:
-    result = schema_rag_service.query_schema(analysis, top_k=30)
+def get_schema(analysis: Dict[str, Any]):
+    result = schema_rag_service.query_schema(analysis)
 
     if not result.tables:
         return JSONResponse({
@@ -26,17 +35,12 @@ def get_schema(analysis: Dict[str, Any] = Body(...)) -> JSONResponse:
             "ok": False,
             "error": "No relevant tables found in schema RAG for this request.",
             "analysis": analysis,
-            "query_text_used": result.query_text,
-            "matched_tables": result.matched_tables,
-            "schema": {"tables": {}, "foreign_keys": []},
         })
 
     return JSONResponse({
         "mode": "db_query_chain",
         "ok": True,
         "analysis": analysis,
-        "query_text_used": result.query_text,
-        "matched_tables": result.matched_tables,
         "schema": {
             "tables": result.tables,
             "foreign_keys": result.foreign_keys,
@@ -45,9 +49,45 @@ def get_schema(analysis: Dict[str, Any] = Body(...)) -> JSONResponse:
 
 
 @app.post("/update")
-def update_schema_index() -> JSONResponse:
+def update_schema():
     schema_rag_service.update()
-    return JSONResponse({
-        "ok": True,
-        "message": "Chroma schema index rebuilt",
-    })
+    return {"ok": True}
+
+
+@app.post("/rag/history/ingest")
+def ingest_history(payload: Dict[str, Any] = Body(...)) -> JSONResponse:
+    # обязательные
+    db_fingerprint = payload["db_fingerprint"]
+    user_query = payload["user_query"]
+    sql = payload["sql"]
+
+    # опциональные
+    tables_used = payload.get("tables_used")
+    duration_ms = payload.get("duration_ms")
+    rows_count = payload.get("rows_count")
+
+    hid = history_rag_service.ingest_success(
+        db_fingerprint=db_fingerprint,
+        user_query=user_query,
+        sql=sql,
+        tables_used=tables_used,
+        duration_ms=duration_ms,
+        rows_count=rows_count,
+    )
+
+    return JSONResponse({"ok": True, "history_id": hid})
+
+
+@app.post("/rag/history/search")
+def search_history(payload: Dict[str, Any] = Body(...)) -> JSONResponse:
+    db_fingerprint = payload["db_fingerprint"]
+    user_query = payload["user_query"]
+    top_k = int(payload.get("top_k", 5))
+
+    matches = history_rag_service.search(
+        db_fingerprint=db_fingerprint,
+        user_query=user_query,
+        top_k=top_k,
+        prefetch_k=max(30, top_k * 6),
+    )
+    return JSONResponse({"ok": True, "matches": [m.__dict__ for m in matches]})

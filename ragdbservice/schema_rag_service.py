@@ -1,16 +1,9 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
-
-import chromadb
-from chromadb.config import Settings
+from typing import Any, Dict, List, Optional, Set
 from chromadb.types import Collection
-
-from service.config import settings
-
-# твои функции
-from DB.pg_chroma_export import build_chroma_from_pg_url, build_schema_context_from_db
+from ragdbservice.config import settings
+from DB.build_vector_store import build_chroma_from_pg_url, build_schema_context_from_db
 
 
 def _pick_query_text(analysis: Dict[str, Any]) -> str:
@@ -84,12 +77,29 @@ class SchemaRagService:
             reset_collection=False,
         )
 
+        self._text_collection = build_chroma_from_pg_url(
+            pg_url=settings.text2sql_db_url,
+            persist_dir=settings.chroma_persist_dir,
+            collection_name=settings.chroma_history_collection,
+            embedding_model=settings.embedding_model,
+            statement_timeout_seconds=settings.statement_timeout_seconds,
+            reset_collection=False,
+        )
+
     def update(self) -> None:
         # полная пересборка (без дублей)
         self._collection = build_chroma_from_pg_url(
             pg_url=settings.pg_url,
             persist_dir=settings.chroma_persist_dir,
             collection_name=settings.chroma_collection,
+            embedding_model=settings.embedding_model,
+            statement_timeout_seconds=settings.statement_timeout_seconds,
+            reset_collection=True,
+        )
+        self._text_collection = build_chroma_from_pg_url(
+            pg_url=settings.text2sql_db_url,
+            persist_dir=settings.chroma_persist_dir,
+            collection_name=settings.chroma_history_collection,
             embedding_model=settings.embedding_model,
             statement_timeout_seconds=settings.statement_timeout_seconds,
             reset_collection=True,

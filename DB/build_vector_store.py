@@ -1,18 +1,24 @@
 from __future__ import annotations
 import psycopg
 from chromadb.types import Collection
-from __future__ import annotations
 import re
 import uuid
 from typing import Any,Dict, List, Tuple, Optional
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
-
+from dataclasses import dataclass
 
 # ---------- Parsing helpers ----------
 
 SECTION_TITLE_RE = re.compile(r"^[A-Z0-9_]+$")  # e.g. TABLES, COLUMNS, TABLE_COMMENTS
+
+
+@dataclass
+class Section:
+    name: str
+    columns: List[str]
+    rows: List[List[str]]
 
 
 # Reuse your existing QUERIES dict exactly as before
@@ -170,6 +176,8 @@ def build_schema_context_from_db(
 
 
 
+def safe_get(row: List[str], idx: int) -> str:
+    return row[idx] if idx < len(row) else ""
 
 
 
@@ -221,6 +229,9 @@ def build_chroma_from_pg_url(
     # Optional: quick sanity check
     client = chromadb.PersistentClient(path=persist_dir, settings=Settings(anonymized_telemetry=False))
     return client.get_or_create_collection(name=collection_name)
+
+
+
 def build_chunks(sections: Dict[str, Section]) -> List[Tuple[str, Dict[str, str]]]:
     """
     Returns list of (text, metadata) tuples.

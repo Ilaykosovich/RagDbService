@@ -21,3 +21,10 @@ venv/
 
 # Prometheus / Grafana data
 grafana_data/
+
+# Chroma
+chroma_db
+
+#Alembic
+alembic
+alembic.ini
