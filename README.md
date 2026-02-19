@@ -54,8 +54,6 @@ the LLM does not rely on manually provided schema descriptions. Instead, the sys
 
 <p align="center">
   <img src="images/Schema.png" width="900" />
-  <img src="images/main_page.png" width="900" />
-  <img src="images/generated_sql.png" width="900" />
 </p>
 
 The system follows a **multi-stage orchestration pipeline** designed to minimize prompt size, reduce hallucinations, and improve SQL correctness.

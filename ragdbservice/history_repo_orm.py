@@ -4,13 +4,13 @@ import hashlib
 import re
 import uuid
 from typing import List, Optional, Dict
-
 from sqlalchemy import select, create_engine
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import sessionmaker
-
 from ragdbservice.config import settings
 from DB.models import RagQueryHistory
+from datetime import datetime, timedelta, timezone
+
 
 _WS_RE = re.compile(r"\s+")
 
@@ -103,3 +103,38 @@ class HistoryRepoORM:
             )
 
         return {str(r.id): r for r in rows}
+
+    def get_rows_from_query_history(
+            self,
+            *,
+            db_fingerprint: Optional[str] = None,
+            days_back: Optional[int] = None,
+            limit: Optional[int] = None,
+            offset: int = 0,
+    ) -> List[RagQueryHistory]:
+        """
+        Returns rows from query_history for building/rebuilding Chroma history collection.
+
+        - db_fingerprint: if provided, only rows for this DB
+        - days_back: if provided, only rows newer than now - days_back
+        - limit/offset: optional batching
+        """
+        stmt = select(RagQueryHistory)
+
+        if db_fingerprint:
+            stmt = stmt.where(RagQueryHistory.db_fingerprint == db_fingerprint)
+
+        if days_back is not None:
+            # created_at is timezone=True in your model, so use aware datetime
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+            stmt = stmt.where(RagQueryHistory.created_at >= cutoff)
+
+        stmt = stmt.order_by(RagQueryHistory.created_at.desc())
+
+        if limit is not None:
+            stmt = stmt.limit(limit).offset(offset)
+
+        with HistorySessionLocal() as session:
+            rows = session.execute(stmt).scalars().all()
+
+        return rows

@@ -77,14 +77,7 @@ class SchemaRagService:
             reset_collection=False,
         )
 
-        self._text_collection = build_chroma_from_pg_url(
-            pg_url=settings.text2sql_db_url,
-            persist_dir=settings.chroma_persist_dir,
-            collection_name=settings.chroma_history_collection,
-            embedding_model=settings.embedding_model,
-            statement_timeout_seconds=settings.statement_timeout_seconds,
-            reset_collection=False,
-        )
+
 
     def update(self) -> None:
         # полная пересборка (без дублей)
@@ -92,14 +85,6 @@ class SchemaRagService:
             pg_url=settings.pg_url,
             persist_dir=settings.chroma_persist_dir,
             collection_name=settings.chroma_collection,
-            embedding_model=settings.embedding_model,
-            statement_timeout_seconds=settings.statement_timeout_seconds,
-            reset_collection=True,
-        )
-        self._text_collection = build_chroma_from_pg_url(
-            pg_url=settings.text2sql_db_url,
-            persist_dir=settings.chroma_persist_dir,
-            collection_name=settings.chroma_history_collection,
             embedding_model=settings.embedding_model,
             statement_timeout_seconds=settings.statement_timeout_seconds,
             reset_collection=True,

@@ -48,12 +48,17 @@ class HistoryRagService:
 
     def start(self) -> None:
         self._repo = HistoryRepoORM()
-        client = chromadb.PersistentClient(
-            path=settings.chroma_persist_dir,
-            settings=Settings(anonymized_telemetry=False),
+
+        self._collection = build_history_chroma_from_db(
+            repo=self._repo,
+            persist_dir=settings.chroma_persist_dir,
+            collection_name=settings.chroma_history_collection,
+            embedding_model=settings.embedding_model,
         )
-        self._collection = client.get_or_create_collection(name=settings.chroma_history_collection)
+
         self._embedder = SentenceTransformer(settings.embedding_model)
+
+
 
     def ingest_success(
         self,
@@ -149,6 +154,60 @@ class HistoryRagService:
                 rows_count=row.rows_count,
             ))
         return out
+
+
+def build_history_chroma_from_db(
+    repo: HistoryRepoORM,
+    *,
+    persist_dir: str,
+    collection_name: str,
+    embedding_model: str,
+    reset_collection: bool = False,
+):
+    client = chromadb.PersistentClient(
+        path=persist_dir,
+        settings=Settings(anonymized_telemetry=False),
+    )
+
+    if reset_collection:
+        try:
+            client.delete_collection(collection_name)
+        except Exception:
+            pass
+
+    collection = client.get_or_create_collection(name=collection_name)
+
+    model = SentenceTransformer(embedding_model)
+
+    rows = repo.get_rows_from_query_history()
+
+    texts = []
+    metadatas = []
+    ids = []
+
+    for row in rows:
+        text = (row.user_query or "").strip()
+
+        texts.append(text)
+        ids.append(str(row.id))
+
+        metadatas.append({
+            "db_fingerprint": row.db_fingerprint,
+            "sql": row.sql,
+            "created_at": row.created_at.isoformat() if row.created_at else ""
+        })
+
+    embeddings = model.encode(texts, normalize_embeddings=True).tolist()
+
+    collection.upsert(
+        ids=ids,
+        documents=texts,
+        metadatas=metadatas,
+        embeddings=embeddings,
+    )
+
+    return collection
+
 
 
 history_rag_service = HistoryRagService()

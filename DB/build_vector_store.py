@@ -340,11 +340,11 @@ def build_chunks(sections: Dict[str, Section]) -> List[Tuple[str, Dict[str, str]
     else:
         table_list = sorted(cols_by_table.keys())
 
-    # Build per-table chunks
+
     for (schema, table) in table_list:
         desc = table_desc.get((schema, table), "")
 
-        # TABLE_COMMENT chunk
+
         if desc:
             chunks.append((f"Table {schema}.{table} description: {desc}", {
                 "chunk_type": "table_comment",
@@ -352,7 +352,6 @@ def build_chunks(sections: Dict[str, Section]) -> List[Tuple[str, Dict[str, str]
                 "table_name": table,
             }))
 
-        # COLUMN chunks (row-level)
         for c in cols_by_table.get((schema, table), []):
             col_name = c["column_name"]
             col_text = (
@@ -368,8 +367,7 @@ def build_chunks(sections: Dict[str, Section]) -> List[Tuple[str, Dict[str, str]
                 "column_name": col_name,
             }))
 
-        # TABLE_SUMMARY chunk (most important for retrieval)
-        # Keep it compact: top N columns + all FKs
+
         cols = cols_by_table.get((schema, table), [])
         fk_list = fks_by_table.get((schema, table), [])
 
@@ -408,7 +406,7 @@ def build_chunks(sections: Dict[str, Section]) -> List[Tuple[str, Dict[str, str]
     return chunks
 
 
-# ---------- Vector store (Chroma) ----------
+
 
 def save_to_chroma(
     chunks: List[Tuple[str, Dict[str, str]]],
@@ -432,7 +430,7 @@ def save_to_chroma(
 
     embeddings = model.encode(texts, show_progress_bar=True, normalize_embeddings=True).tolist()
 
-    # Upsert in batches to avoid large memory spikes
+
     batch_size = 50
     for start in range(0, len(texts), batch_size):
         end = start + batch_size

@@ -27,7 +27,6 @@ class RagQueryHistory(Base):
     user_query: Mapped[str] = mapped_column(Text, nullable=False)
     sql: Mapped[str] = mapped_column(Text, nullable=False)
 
-    # хранить списком строк (jsonb array)
     tables_used: Mapped[Optional[List[str]]] = mapped_column(JSONB, nullable=True)
 
     duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
