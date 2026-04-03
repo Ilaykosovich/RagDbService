@@ -1,113 +1,179 @@
-# Text-to-SQL Copilot  
-*(Part 1 — without RAG)*
+# RagDbService
 
-## How to start the project with Docker
+A FastAPI microservice that provides two RAG (Retrieval-Augmented Generation) capabilities for a Text-to-SQL pipeline:
 
-This is the recommended way to run the project.
+- **Schema RAG** — dynamically retrieves the minimal relevant database schema for a given natural-language query
+- **History RAG** — stores and retrieves previously successful SQL executions to assist future query generation
 
-### 1. Create environment configuration
+---
 
-Create a `.env` file based on the provided template:
+## How it works
 
+### Schema RAG
 
+On startup the service connects to your PostgreSQL database, introspects the full schema (tables, columns, comments, foreign keys), and indexes it into a local [ChromaDB](https://www.trychroma.com/) vector store using `sentence-transformers/all-MiniLM-L6-v2` embeddings.
+
+When a query analysis arrives at `POST /schema`, the service:
+1. Converts the analysis into a search string
+2. Runs a vector similarity search over the schema chunks
+3. Ranks candidate tables by a score combining retrieval rank and chunk type
+4. Expands the result by one FK hop to include JOIN bridges
+5. Returns only the tables and foreign keys relevant to the query
+
+### History RAG
+
+Successful SQL executions are persisted in a PostgreSQL `query_history` table and simultaneously indexed in a separate Chroma collection.
+
+When `POST /rag/history/search` is called, the service retrieves semantically similar past queries filtered by `db_fingerprint`, then re-ranks them with a schema-table overlap boost.
+
+---
+
+## API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/schema` | Return minimal relevant schema for a query analysis |
+| `POST` | `/update` | Rebuild the schema vector store from the live database |
+| `POST` | `/rag/history/ingest` | Persist a successful SQL execution and index it |
+| `POST` | `/rag/history/search` | Search past queries similar to the current request |
+
+### `POST /schema`
+
+Request body — structured query analysis:
+```json
+{
+  "search_queries": ["total revenue by region last quarter"],
+  "intent": "aggregation",
+  "keywords": ["revenue", "region"],
+  "entities": [{"type": "time", "value": "last quarter"}]
+}
+```
+
+Response:
+```json
+{
+  "mode": "db_query_chain",
+  "ok": true,
+  "analysis": { "...": "..." },
+  "schema": {
+    "tables": { "public.orders": { "...": "..." } },
+    "foreign_keys": [{ "from": "public.order_items", "to": "public.orders", "..." : "..." }]
+  }
+}
+```
+
+### `POST /rag/history/ingest`
+
+```json
+{
+  "db_fingerprint": "abc123",
+  "user_query": "total revenue by region",
+  "sql": "SELECT region, SUM(amount) FROM orders GROUP BY region",
+  "tables_used": ["public.orders"],
+  "duration_ms": 42,
+  "rows_count": 5
+}
+```
+
+### `POST /rag/history/search`
+
+```json
+{
+  "db_fingerprint": "abc123",
+  "user_query": "revenue per region",
+  "top_k": 5
+}
+```
+
+---
+
+## Configuration
+
+Copy the example env file and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `pg_url` | ✅ | — | PostgreSQL URL of the **business database** (schema is introspected from here) |
+| `text2sql_db_url` | ✅ | — | PostgreSQL URL of the **history database** (stores `query_history` table) |
+| `chroma_persist_dir` | | `./chroma_db` | Local directory for ChromaDB persistence |
+| `chroma_collection` | | `pg_schema` | Chroma collection name for schema embeddings |
+| `chroma_history_collection` | | `chroma_history_collection` | Chroma collection name for history embeddings |
+| `embedding_model` | | `sentence-transformers/all-MiniLM-L6-v2` | Sentence-transformers model for embeddings |
+| `statement_timeout_seconds` | | `30` | PostgreSQL statement timeout for schema introspection queries |
+
+---
+
+## Running with Docker
+
+```bash
+# 1. Configure environment
 cp .env.example .env
 
-### 2. Build the Docker image
+# 2. Build the image
+docker build -t ragdbservice .
 
-From the project root directory, run: docker build -t text-to-sql-copilot .
+# 3. Run the container
+docker run -p 8000:8000 --env-file .env ragdbservice
+```
 
-### 3. Run the container
-docker run -p 8000:8000 --env-file .env text-to-sql-copilot
-
-
-The service will be available at:
-
-http://localhost:8000
-
-
-🚧 **Status:** Work in progress
-
-Text-to-SQL Copilot is a system that allows users to query relational databases using **natural language**, without requiring any knowledge of SQL or the underlying database schema.
-
-The system behaves like a conversational LLM assistant.  
-When a user request requires database access, the agent automatically switches into **SQL generation mode**, executes the query, and returns the result.
-
-A key design principle of this project is **schema-awareness without schema prompting**:  
-the LLM does not rely on manually provided schema descriptions. Instead, the system dynamically retrieves database schema metadata and uses it during query generation.
+Service will be available at `http://localhost:8000`.  
+Interactive API docs at `http://localhost:8000/docs`.
 
 ---
 
-## Key features
+## Running locally
 
-- Natural language → SQL query generation
-- No prior knowledge of database schema required
-- Dynamic schema introspection (tables, columns, relations)
-- Iterative SQL refinement based on execution errors
-- Optional SQL transparency (generated SQL can be shown to the user)
-- Session-based conversational context
-- Observability via Prometheus & Grafana
-- Supports both local and cloud-based LLMs
+```bash
+pip install -r requirements.txt
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
 
 ---
 
-## Architecture Overview
+## Database migrations
 
-<p align="center">
-  <img src="images/Schema.png" width="900" />
-</p>
+The `query_history` table is managed with Alembic:
 
-The system follows a **multi-stage orchestration pipeline** designed to minimize prompt size, reduce hallucinations, and improve SQL correctness.
-
-### 1. User query ingestion
-The user submits a natural language request describing the data they want to retrieve.
-
-### 2. Semantic analysis & intent extraction
-The LLM performs semantic analysis of the user query and generates a **structured JSON specification** describing:
-- entities of interest
-- filters and conditions
-- aggregations
-- expected output format
-
-This step is intentionally decoupled from SQL generation.
-
-### 3. Dynamic schema introspection
-In parallel, the system queries the database to retrieve **schema metadata**, including:
-- table names
-- column definitions
-- relationships and foreign keys
-- optional comments and constraints
-
-This ensures the LLM always operates on **up-to-date schema information**.
-
-### 4. Schema-aware data pruning
-The JSON specification and schema metadata are provided to the LLM, which prunes irrelevant tables and columns.
-
-The result is a **minimal, task-specific schema context**, significantly reducing token usage and cognitive load for the model.
-
-### 5. SQL generation
-Using the pruned schema, the LLM generates a SQL query tailored to the user’s intent.
-
-### 6. Execution & error-driven refinement
-The generated SQL is executed against the database.
-
-- If execution succeeds, the result is returned to the user.
-- If an execution error occurs, the error message is appended to the prompt and the LLM retries SQL generation.
-
-This feedback loop continues until the query succeeds or a retry limit is reached.
+```bash
+alembic upgrade head
+```
 
 ---
 
-## Project components
+## Project structure
 
-- **Backend:** FastAPI (session-based chat, orchestration, SQL execution)
-- **Frontend:** Simple single-page web client
-- **LLM runtime:** OpenAI API or local models via Ollama
-- **Observability:** Prometheus (metrics), Grafana (dashboards)
+```
+RagDbService/
+├── main.py                        # FastAPI app & endpoints
+├── ragdbservice/
+│   ├── config.py                  # Settings (pydantic-settings)
+│   ├── schema_rag_service.py      # Schema vector search logic
+│   ├── history_rag_service.py     # History ingest & search logic
+│   └── history_repo_orm.py        # SQLAlchemy repository for query_history
+├── DB/
+│   ├── build_vector_store.py      # Schema introspection & Chroma indexing
+│   ├── models.py                  # SQLAlchemy ORM models
+│   └── session.py                 # DB session factory
+├── alembic/                       # Database migrations
+├── chroma_db/                     # Persisted vector store (gitignored)
+├── Dockerfile
+├── requirements.txt
+└── .env.example
+```
 
 ---
 
-## LLM configuration
+## Tech stack
 
-The project supports both **OpenAI** and **local LLMs**.
-
-
+| Component | Library |
+|-----------|---------|
+| API framework | FastAPI + Uvicorn |
+| Vector store | ChromaDB (persistent, local) |
+| Embeddings | sentence-transformers (`all-MiniLM-L6-v2`) |
+| ORM / migrations | SQLAlchemy 2.0 + Alembic |
+| Database driver | psycopg 3 |
+| Settings | pydantic-settings |
