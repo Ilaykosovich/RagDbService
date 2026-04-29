@@ -4,7 +4,7 @@ import hashlib
 import re
 import uuid
 from typing import List, Optional, Dict
-from sqlalchemy import select, create_engine
+from sqlalchemy import select, create_engine, update, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import sessionmaker
 from ragdbservice.config import settings
@@ -47,6 +47,9 @@ HistorySessionLocal = sessionmaker(
 
 
 class HistoryRepoORM:
+    def __init__(self) -> None:
+        ensure_minilm_embeddings_column()
+
     def upsert_success(
         self,
         *,
@@ -56,6 +59,7 @@ class HistoryRepoORM:
         tables_used: Optional[List[str]] = None,
         duration_ms: Optional[int] = None,
         rows_count: Optional[int] = None,
+        embedings_allMiniLML6v2: Optional[List[float]] = None,
     ) -> RagQueryHistory:
         qh = compute_query_hash(db_fingerprint, user_query, sql)
 
@@ -68,6 +72,7 @@ class HistoryRepoORM:
                     db_fingerprint=db_fingerprint,
                     user_query=user_query,
                     sql=sql,
+                    embedings_allMiniLML6v2=embedings_allMiniLML6v2,
                     tables_used=tables_used,
                     duration_ms=duration_ms,
                     rows_count=rows_count,
@@ -81,6 +86,7 @@ class HistoryRepoORM:
                         "duration_ms": insert(RagQueryHistory).excluded.duration_ms,
                         "rows_count": insert(RagQueryHistory).excluded.rows_count,
                         "tables_used": insert(RagQueryHistory).excluded.tables_used,
+                        "embedings_allMiniLML6v2": insert(RagQueryHistory).excluded.embedings_allMiniLML6v2,
                     },
                 )
                 .returning(RagQueryHistory)
@@ -103,6 +109,32 @@ class HistoryRepoORM:
             )
 
         return {str(r.id): r for r in rows}
+
+    def get_rows_missing_minilm_embeddings(self, *, limit: Optional[int] = None) -> List[RagQueryHistory]:
+        stmt = (
+            select(RagQueryHistory)
+            .where(RagQueryHistory.embedings_allMiniLML6v2.is_(None))
+            .order_by(RagQueryHistory.created_at.asc())
+        )
+
+        if limit is not None:
+            stmt = stmt.limit(limit)
+
+        with HistorySessionLocal() as session:
+            return session.execute(stmt).scalars().all()
+
+    def update_minilm_embeddings(self, embeddings_by_id: Dict[uuid.UUID, List[float]]) -> None:
+        if not embeddings_by_id:
+            return
+
+        with HistorySessionLocal() as session:
+            for row_id, embedding in embeddings_by_id.items():
+                session.execute(
+                    update(RagQueryHistory)
+                    .where(RagQueryHistory.id == row_id)
+                    .values(embedings_allMiniLML6v2=embedding)
+                )
+            session.commit()
 
     def get_rows_from_query_history(
             self,
@@ -138,3 +170,11 @@ class HistoryRepoORM:
             rows = session.execute(stmt).scalars().all()
 
         return rows
+
+
+def ensure_minilm_embeddings_column() -> None:
+    with _history_engine.begin() as conn:
+        conn.execute(text(
+            'ALTER TABLE query_history '
+            'ADD COLUMN IF NOT EXISTS "embedings_allMiniLML6v2" JSONB'
+        ))

@@ -48,15 +48,19 @@ class HistoryRagService:
 
     def start(self) -> None:
         self._repo = HistoryRepoORM()
+        self._embedder = SentenceTransformer(settings.embedding_model)
+
+        backfill_minilm_embeddings(
+            repo=self._repo,
+            model=self._embedder,
+        )
 
         self._collection = build_history_chroma_from_db(
             repo=self._repo,
             persist_dir=settings.chroma_persist_dir,
             collection_name=settings.chroma_history_collection,
-            embedding_model=settings.embedding_model,
+            model=self._embedder,
         )
-
-        self._embedder = SentenceTransformer(settings.embedding_model)
 
 
 
@@ -73,6 +77,9 @@ class HistoryRagService:
         if not self._repo or not self._collection or not self._embedder:
             raise RuntimeError("HistoryRagService not started")
 
+        doc = _doc_text(user_query)
+        emb = self._embedder.encode([doc], normalize_embeddings=True).tolist()[0]
+
         row: RagQueryHistory = self._repo.upsert_success(
             db_fingerprint=db_fingerprint,
             user_query=user_query,
@@ -80,10 +87,8 @@ class HistoryRagService:
             tables_used=tables_used,
             duration_ms=duration_ms,
             rows_count=rows_count,
+            embedings_allMiniLML6v2=emb,
         )
-
-        doc = _doc_text(row.user_query)
-        emb = self._embedder.encode([doc], normalize_embeddings=True).tolist()[0]
 
         self._collection.upsert(
             ids=[str(row.id)],
@@ -113,8 +118,9 @@ class HistoryRagService:
         tables_filter = schema_res.matched_tables  # List[str]
 
         qdoc = _doc_text(user_query)
+        query_embedding = self._embedder.encode([qdoc], normalize_embeddings=True).tolist()[0]
         res = self._collection.query(
-            query_texts=[qdoc],
+            query_embeddings=[query_embedding],
             n_results=max(prefetch_k, top_k),
             include=["distances"],
             where={"db_fingerprint": db_fingerprint},
@@ -161,7 +167,7 @@ def build_history_chroma_from_db(
     *,
     persist_dir: str,
     collection_name: str,
-    embedding_model: str,
+    model: SentenceTransformer,
     reset_collection: bool = False,
 ):
     client = chromadb.PersistentClient(
@@ -177,19 +183,18 @@ def build_history_chroma_from_db(
 
     collection = client.get_or_create_collection(name=collection_name)
 
-    model = SentenceTransformer(embedding_model)
-
     rows = repo.get_rows_from_query_history()
 
     texts = []
     metadatas = []
     ids = []
+    embeddings = []
 
     for row in rows:
         text = (row.user_query or "").strip()
-
         texts.append(text)
         ids.append(str(row.id))
+        embeddings.append(row.embedings_allMiniLML6v2)
 
         metadatas.append({
             "db_fingerprint": row.db_fingerprint,
@@ -197,7 +202,15 @@ def build_history_chroma_from_db(
             "created_at": row.created_at.isoformat() if row.created_at else ""
         })
 
-    embeddings = model.encode(texts, normalize_embeddings=True).tolist()
+    if not ids:
+        return collection
+
+    missing_indexes = [i for i, emb in enumerate(embeddings) if emb is None]
+    if missing_indexes:
+        missing_texts = [texts[i] for i in missing_indexes]
+        generated = model.encode(missing_texts, normalize_embeddings=True).tolist()
+        for i, emb in zip(missing_indexes, generated):
+            embeddings[i] = emb
 
     collection.upsert(
         ids=ids,
@@ -207,6 +220,28 @@ def build_history_chroma_from_db(
     )
 
     return collection
+
+
+def backfill_minilm_embeddings(
+    repo: HistoryRepoORM,
+    model: SentenceTransformer,
+    *,
+    batch_size: int = 128,
+) -> int:
+    updated = 0
+
+    while True:
+        rows = repo.get_rows_missing_minilm_embeddings(limit=batch_size)
+        if not rows:
+            return updated
+
+        texts = [_doc_text(row.user_query) for row in rows]
+        embeddings = model.encode(texts, normalize_embeddings=True).tolist()
+        repo.update_minilm_embeddings({
+            row.id: embedding
+            for row, embedding in zip(rows, embeddings)
+        })
+        updated += len(rows)
 
 
 

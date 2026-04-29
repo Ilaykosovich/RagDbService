@@ -25,6 +25,7 @@ class RagQueryHistory(Base):
     db_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
 
     user_query: Mapped[str] = mapped_column(Text, nullable=False)
+    embedings_allMiniLML6v2: Mapped[Optional[List[float]]] = mapped_column(JSONB, nullable=True)
     sql: Mapped[str] = mapped_column(Text, nullable=False)
 
     tables_used: Mapped[Optional[List[str]]] = mapped_column(JSONB, nullable=True)
